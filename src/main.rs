@@ -1,35 +1,49 @@
-use sqlx::postgres::PgPoolOptions;
-// use sqlx::mysql::MySqlPoolOptions;
-// etc.
+use std::sync::Mutex;
+use sqlx;
+use actix_web::web::Data;
+use actix_web::{get, post, web, App, HttpServer, Responder, HttpResponse};
 
-// #[async_std::main]
-#[tokio::main]
-// or #[actix_web::main]
-async fn main() -> Result<(), sqlx::Error> {
-    // Create a connection pool
-    //  for MySQL, use MySqlPoolOptions::new()
-    //  for SQLite, use SqlitePoolOptions::new()
-    //  etc.
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect("postgres://postgres:password@localhost:5432/postgres").await?; // 5432
 
-    // Make a simple query to return the given parameter (use a question mark `?` instead of `$1` for MySQL)
-    let row: (i64,) = sqlx::query_as("SELECT $1")
-    .bind(150_i64)
-    .fetch_one(&pool).await?;
+#[get("/")]
+async fn hello() -> impl Responder {
+    HttpResponse::Ok().body("Hello world!")
+}
 
-    assert_eq!(row.0, 150);
+#[post("/echo")]
+async fn echo(req_body: String) -> impl Responder {
+    HttpResponse::Ok().body(req_body)
+}
 
-    // Make a simple query to real table and return value from its column:
-    // CREATE TABLE public.test (
-    //     "name" varchar NULL,
-    //     age int4 NULL,
-    //     id int4 NOT NULL GENERATED ALWAYS AS IDENTITY
-    // ); 
+async fn manual_hello(data: Data<Mutex<MyPool>>) -> impl Responder {
+    let my_pool = &data.lock().unwrap();
     let row: (String,) = sqlx::query_as("SELECT name from public.test")
-        .fetch_one(&pool).await?; 
-    println!("{:?}", &row);
- 
-    Ok(())
+        .fetch_one(&my_pool.pool).await.unwrap(); 
+    HttpResponse::Ok().body(format!("Hey there! {}", row.0.as_str()))
+}
+
+struct MyPool {
+     pool: sqlx::Pool<sqlx::Postgres>,     
+ }
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect("postgres://postgres:password@localhost:5432/postgres").await.unwrap();
+
+    let pool_struct = MyPool{ pool };
+
+    let data = Data::new(Mutex::new(pool_struct));
+
+    HttpServer::new(move|| {
+        App::new()
+            .app_data(Data::clone(&data))
+            .route("/hello", web::get().to(manual_hello))
+            .service(hello)
+            .service(echo)
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await 
 }
